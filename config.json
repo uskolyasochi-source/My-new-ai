@@ -1,0 +1,8 @@
+{
+  "app_name": "MultiAI",
+  "version": "3.0.0",
+  "secret_salt": "SuperSecretAdminSalt_2026_Qwen",
+  "fuzzy_threshold": 0.6,
+  "context_depth": 3,
+  "data_dir": "data"
+}
