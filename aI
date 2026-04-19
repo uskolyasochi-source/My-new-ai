@@ -427,5 +427,24 @@ def main():
     """Запуск приложения"""
     # Проверяем сохранённую лицензию
     saved = load_license()
+    
     if saved:
-        ok, _ = validate_license(saved["email"], saved
+        # Исправленная строка: разбили на переменные для надежности
+        s_email = saved.get("email", "")
+        s_req = saved.get("req_code", "")
+        s_key = saved.get("access_key", "")
+        
+        ok, msg = validate_license(s_email, s_req, s_key)
+        
+        if ok:
+            MainWindow(s_email)
+            return
+    
+    # Показываем окно входа, если лицензии нет или она неверна
+    LoginWindow("root", lambda email: MainWindow(email))
+
+
+if __name__ == "__main__":
+    # Создаём папку данных при первом запуске
+    os.makedirs(DATA_DIR, exist_ok=True)
+    main()
