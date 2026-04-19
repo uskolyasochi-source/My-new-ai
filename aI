@@ -1,1 +1,431 @@
 
+# ==== ИМПОРТЫ ====
+import json
+import os
+import sys
+import difflib
+import hashlib
+import base64
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
+
+# ==== КОНФИГУРАЦИЯ ====
+VERSION = "3.0.0"
+APP_NAME = "MultiAI"
+AUTHOR = "MaxCraft"
+AUTHOR_EMAIL = "uskolyasochi@gmail.com"
+GITHUB_URL = "https://github.com/MaxCraft/MultiAI"
+
+# Пути к файлам данных
+DATA_DIR = "data"
+KNOWLEDGE_FILE = os.path.join(DATA_DIR, "multi_ai_knowledge.json")
+MEMORY_FILE = os.path.join(DATA_DIR, "multi_ai_memory.json")
+LICENSE_FILE = os.path.join(DATA_DIR, "ai_license.dat")
+
+# Настройки безопасности
+SECRET_SALT = "SuperSecretAdminSalt_2026_Qwen"  # 🔐 Меняй для своей версии!
+
+# Настройки ИИ
+FUZZY_THRESHOLD = 0.6      # Порог нечёткого поиска (0.0–1.0)
+CONTEXT_DEPTH = 3          # Сколько сообщений помнить
+
+# Настройки GUI
+GUI_WIDTH, GUI_HEIGHT = 800, 600
+FONT_FAMILY = "Consolas"
+FONT_SIZE = 11
+
+# Цветовая схема (тёмная тема)
+COLORS = {
+    "bg": "#1e1e1e", "bg_top": "#252526", "bg_input": "#333333",
+    "text": "#cccccc", "text_success": "#00ff00", "text_warning": "#ffaa00",
+    "text_error": "#ff5555", "text_user": "#ffff00", "text_ai": "#00ff00",
+    "btn_primary": "#007acc", "btn_success": "#2ea043", "btn_danger": "#c42b1c",
+    "entry_bg": "#333333", "entry_fg": "#ffffff"
+}
+
+
+# ==== СИСТЕМА ЛИЦЕНЗИРОВАНИЯ ====
+
+def generate_request_code(email: str) -> str:
+    """Генерирует код запроса для отправки администратору"""
+    raw = f"{email.strip().lower()}|{SECRET_SALT}"
+    hash_val = hashlib.sha256(raw.encode()).hexdigest()
+    code = base64.b64encode(hash_val.encode()).decode()[:20]
+    return f"REQ-{code}"
+
+
+def generate_access_key(request_code: str) -> str:
+    """[ADMIN] Генерирует ключ доступа из кода запроса"""
+    clean = request_code.replace("REQ-", "").strip()
+    raw = f"{clean}|ADMIN_APPROVED|{SECRET_SALT}"
+    hash_val = hashlib.md5(raw.encode()).hexdigest()
+    k1, k2, k3 = hash_val[:8].upper(), hash_val[8:12].upper(), hash_val[12:16].upper()
+    return f"KEY-{k1}-{k2}-{k3}"
+
+
+def validate_license(email: str, request_code: str, access_key: str) -> Tuple[bool, str]:
+    """Проверяет лицензию. Возвращает (успех, сообщение)"""
+    if generate_request_code(email) != request_code:
+        return False, "❌ Request Code не соответствует Email"
+    try:
+        parts = access_key.strip().split('-')
+        if len(parts) != 4 or parts[0] != 'KEY':
+            return False, "❌ Неверный формат ключа"
+        clean = request_code.replace("REQ-", "").strip()
+        raw = f"{clean}|ADMIN_APPROVED|{SECRET_SALT}"
+        expected = hashlib.md5(raw.encode()).hexdigest().lower()
+        user_hash = (parts[1] + parts[2] + parts[3]).lower()
+        return (True, "✅ Доступ разрешён") if user_hash == expected else (False, "❌ Неверный Access Key")
+    except Exception as e:
+        return False, f"❌ Ошибка: {str(e)}"
+
+
+def save_license(email: str, req: str, key: str) -> bool:
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(LICENSE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"email": email, "req_code": req, "access_key": key}, f, ensure_ascii=False, indent=2)
+        return True
+    except: return False
+
+
+def load_license() -> Optional[Dict[str, str]]:
+    if os.path.exists(LICENSE_FILE):
+        try:
+            with open(LICENSE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except: pass
+    return None
+
+
+# ==== ЯДРО ИИ ====
+
+class MultiAIBrain:
+    """Интеллект бота: паттерны, контекст, fuzzy-поиск"""
+    
+    def __init__(self):
+        self.context: List[Dict[str, str]] = self._load_json(MEMORY_FILE, [])
+        self.patterns: List[Dict[str, Any]] = self._build_patterns()
+    
+    def _load_json(self, path: str, default: Any = None) -> Any:
+        if default is None: default = []
+        if not os.path.exists(path): return default
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, (list, dict)) else default
+        except: return default
+    
+    def _save_json(self, path: str,  Any) -> bool:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+        except: return False
+    
+    def _build_patterns(self) -> List[Dict[str, Any]]:
+        """Встроенные ответы"""
+        return [
+            {"keywords": ["привет", "hi", "hello", "здравствуй", "йо"], "answer": "Привет! Система защищена. Готов к работе. 🤖"},
+            {"keywords": ["как дела", "что нового", "как сам"], "answer": "Все системы в норме. Авторизация подтверждена. А у тебя как?"},
+            {"keywords": ["кто ты", "что ты", "ты кто"], "answer": f"Я {APP_NAME} v{VERSION} — графический ИИ с защитой доступа и обучением."},
+            {"keywords": ["помощь", "help", "что умеешь"], "answer": "Я умею:\n• Вести диалог с учётом контекста\n• Понимать опечатки (fuzzy matching)\n• Анализировать тональность текста\n• Обучаться новым фразам через вкладку 'Train AI'"},
+            {"keywords": ["пока", "до свидания", "выход"], "answer": "Пока! Не забывай заглядывать — я сохраняю всё, чему ты меня научил. 👋"},
+            {"keywords": ["спасибо", "благодарю", "респект", "круто"], "answer": "Пожалуйста! Стараюсь становиться умнее с каждым диалогом. 🚀"},
+            {"keywords": ["расскажи анекдот", "шутка", "пошути"], "answer": "Почему программисты путают Хэллоуин и Рождество?\nПотому что Oct 31 == Dec 25 🎃🎄"},
+            {"keywords": ["kill.os", "red alert", "panic"], "answer": "🔴 РЕЖИМ ПАНИКИ! (шутка, но тема стала красной)"},
+        ] + self._load_json(KNOWLEDGE_FILE, [])
+    
+    def _analyze_sentiment(self, text: str) -> str:
+        pos = ["хорошо", "отлично", "супер", "рад", "люблю", "класс", "круто", "весело"]
+        neg = ["плохо", "ужас", "грустно", "зло", "ненавижу", "ошибка", "боль", "скучно"]
+        t = text.lower()
+        p, n = sum(1 for w in pos if w in t), sum(1 for w in neg if w in t)
+        return "позитивный 😊" if p > n else "негативный 😔" if n > p else "нейтральный 😐"
+    
+    def get_response(self, user_text: str) -> str:
+        text = user_text.strip()
+        if not text: return "..."
+        text_low = text.lower()
+        
+        # Поиск по паттернам (точный + fuzzy)
+        best_ans, best_ratio = None, 0.0
+        for pat in self.patterns:
+            for kw in pat.get("keywords", []):
+                if kw in text_low: return pat["answer"]
+                ratio = difflib.SequenceMatcher(None, text_low, kw).ratio()
+                if ratio > best_ratio and ratio >= FUZZY_THRESHOLD:
+                    best_ratio, best_ans = ratio, pat["answer"]
+        if best_ans: return best_ans
+        
+        # Контекстные вопросы
+        if self.context:
+            last = self.context[-1]
+            if any(q in text_low for q in ["почему", "зачем", "причина"]) and len(text.split()) < 5:
+                return f"🔍 Контекст: ранее ты спросил «{last['user']}». Мой ответ: «{last['ai']}». Уточни?"
+            if any(q in text_low for q in ["повтори", "ещё раз", "напомни"]):
+                return f"🔁 Я сказал: {last['ai']}"
+        
+        # Fallback: анализ
+        sent = self._analyze_sentiment(text)
+        return f"🤔 Не нашёл ответа, но проанализировал:\n• Тональность: {sent}\n• Символов: {len(text)}, Слов: {len(text.split())}\n• Время: {datetime.now().strftime('%H:%M')}\n\nПопробуй перефразировать или обучи меня во вкладке 'Train AI'!"
+    
+    def train(self, keywords: str, answer: str) -> bool:
+        kw_list = [k.strip().lower() for k in keywords.split(",") if k.strip()]
+        if not kw_list or not answer.strip(): return False
+        knowledge = self._load_json(KNOWLEDGE_FILE, [])
+        knowledge.append({"keywords": kw_list, "answer": answer.strip()})
+        if self._save_json(KNOWLEDGE_FILE, knowledge):
+            self.patterns = self._build_patterns()
+            return True
+        return False
+    
+    def add_context(self, user: str, ai: str):
+        self.context.append({"user": user, "ai": ai})
+        if len(self.context) > CONTEXT_DEPTH: self.context = self.context[-CONTEXT_DEPTH:]
+        self._save_json(MEMORY_FILE, self.context)
+    
+    def clear_context(self):
+        self.context = []
+        self._save_json(MEMORY_FILE, self.context)
+
+
+# ==== GUI: ОКНО АВТОРИЗАЦИИ ====
+
+class LoginWindow:
+    def __init__(self, parent, on_success):
+        self.win = tk.Toplevel(parent) if parent != "root" else tk.Tk()
+        self.win.title(f"{APP_NAME} v{VERSION} — Авторизация")
+        self.win.geometry("500x400")
+        self.win.configure(bg=COLORS["bg"])
+        self.win.resizable(False, False)
+        self.on_success = on_success
+        
+        # Горячая клавиша для админ-панели
+        self.win.bind('<Control-Shift-A>', lambda e: self._open_admin_panel())
+        
+        self._build_ui()
+        if parent == "root": self.win.mainloop()
+    
+    def _build_ui(self):
+        f = tk.Frame(self.win, bg=COLORS["bg"])
+        f.place(relx=0.5, rely=0.5, anchor="center")
+        
+        tk.Label(f, text=f"🔐 {APP_NAME} v{VERSION}", font=(FONT_FAMILY, 16, "bold"), 
+                fg=COLORS["text_success"], bg=COLORS["bg"]).pack(pady=20)
+        
+        tk.Label(f, text="Email:", font=(FONT_FAMILY, 10), fg=COLORS["text"], bg=COLORS["bg"]).pack(anchor="w")
+        self.email_ent = tk.Entry(f, font=(FONT_FAMILY, 12), width=35, bg=COLORS["entry_bg"], fg=COLORS["entry_fg"], insertbackground="white")
+        self.email_ent.pack(pady=5)
+        self.email_ent.bind('<KeyRelease>', lambda e: self._update_req())
+        
+        tk.Label(f, text="Request Code (отправь админу):", font=(FONT_FAMILY, 9), fg=COLORS["text_warning"], bg=COLORS["bg"]).pack(anchor="w", pady=(10,0))
+        self.req_lbl = tk.Label(f, text="...", font=(FONT_FAMILY, 10), fg="white", bg=COLORS["bg_input"], width=35, anchor="w")
+        self.req_lbl.pack(pady=2)
+        
+        tk.Label(f, text="Access Key (от админа):", font=(FONT_FAMILY, 10), fg=COLORS["text"], bg=COLORS["bg"]).pack(anchor="w", pady=(10,0))
+        self.key_ent = tk.Entry(f, font=(FONT_FAMILY, 12), width=35, bg=COLORS["entry_bg"], fg=COLORS["entry_fg"], insertbackground="white")
+        self.key_ent.pack(pady=5)
+        
+        tk.Button(f, text="▶ ВОЙТИ", command=self._login, bg=COLORS["btn_primary"], fg="white", font=(FONT_FAMILY, 10, "bold"), cursor="hand2").pack(pady=25)
+        
+        tk.Label(f, text=f"Admin: Ctrl+Shift+A | {AUTHOR}", font=(FONT_FAMILY, 8), fg=COLORS["text"], bg=COLORS["bg"]).pack(side="bottom", pady=10)
+    
+    def _update_req(self):
+        email = self.email_ent.get()
+        self.req_lbl.config(text=generate_request_code(email) if "@" in email else "...введи email...")
+    
+    def _login(self):
+        email, key = self.email_ent.get(), self.key_ent.get()
+        if not email or not key:
+            messagebox.showerror("Ошибка", "Заполни все поля!")
+            return
+        req = generate_request_code(email)
+        ok, msg = validate_license(email, req, key)
+        if ok:
+            if save_license(email, req, key):
+                messagebox.showinfo("Успех", msg)
+                self.win.destroy()
+                self.on_success(email)
+            else:
+                messagebox.showerror("Ошибка", "Не удалось сохранить лицензию")
+        else:
+            messagebox.showerror("Отказано", f"{msg}\n\nТвой Request Code:\n{req}")
+    
+    def _open_admin_panel(self):
+        AdminPanel(self.win)
+
+
+# ==== GUI: АДМИН-ПАНЕЛЬ ====
+
+class AdminPanel:
+    def __init__(self, parent):
+        self.win = tk.Toplevel(parent)
+        self.win.title("🔐 ADMIN PANEL — Key Generator")
+        self.win.geometry("450x220")
+        self.win.configure(bg="#2d2d2d")
+        self.win.resizable(False, False)
+        self.win.transient(parent)
+        self.win.grab_set()
+        
+        tk.Label(self.win, text="Вставь Request Code пользователя:", fg="white", bg="#2d2d2d", font=(FONT_FAMILY, 10)).pack(pady=15)
+        self.code_ent = tk.Entry(self.win, font=(FONT_FAMILY, 11), width=40, bg="#444", fg="white", insertbackground="white")
+        self.code_ent.pack(pady=5)
+        self.code_ent.focus()
+        
+        self.result = tk.Label(self.win, text="", fg=COLORS["text_success"], bg="#2d2d2d", font=(FONT_FAMILY, 10), wraplength=400, justify="left")
+        self.result.pack(pady=10)
+        
+        btn_f = tk.Frame(self.win, bg="#2d2d2d")
+        btn_f.pack(pady=5)
+        tk.Button(btn_f, text="🔑 Сгенерировать", command=self._generate, bg=COLORS["btn_success"], fg="white", cursor="hand2").pack(side="left", padx=5)
+        tk.Button(btn_f, text="✕ Закрыть", command=self.win.destroy, bg=COLORS["btn_danger"], fg="white", cursor="hand2").pack(side="left", padx=5)
+    
+    def _generate(self):
+        code = self.code_ent.get().strip()
+        if not code.startswith("REQ-"):
+            self.result.config(text="❌ Код должен начинаться с REQ-", fg=COLORS["text_error"])
+            return
+        key = generate_access_key(code)
+        self.result.config(text=f"✅ Готовый ключ:\n{key}", fg=COLORS["text_success"])
+        # Копируем в буфер
+        self.win.clipboard_clear()
+        self.win.clipboard_append(key)
+        messagebox.showinfo("Успех", "Ключ сгенерирован и скопирован в буфер обмена!")
+
+
+# ==== GUI: ОСНОВНОЕ ОКНО ====
+
+class MainWindow:
+    def __init__(self, email: str):
+        self.root = tk.Tk()
+        self.root.title(f"{APP_NAME} v{VERSION} — {email}")
+        self.root.geometry(f"{GUI_WIDTH}x{GUI_HEIGHT}")
+        self.root.configure(bg=COLORS["bg"])
+        self.root.minsize(600, 400)
+        
+        self.email = email
+        self.brain = MultiAIBrain()
+        self._build_ui()
+        self._log("СИСТЕМА", f"Добро пожаловать, {email}! 🎉")
+        self.root.mainloop()
+    
+    def _build_ui(self):
+        # Верхняя панель
+        top = tk.Frame(self.root, bg=COLORS["bg_top"], height=40)
+        top.pack(fill="x")
+        tk.Label(top, text=f"👤 {self.email} | 🟢 Online | v{VERSION}", 
+                fg=COLORS["text_success"], bg=COLORS["bg_top"], font=(FONT_FAMILY, 10)).pack(side="left", padx=10, pady=10)
+        tk.Button(top, text="🚪 Выход", command=self._logout, bg=COLORS["btn_danger"], fg="white", relief="flat", cursor="hand2").pack(side="right", padx=10, pady=5)
+        
+        # Вкладки
+        nb = ttk.Notebook(self.root)
+        nb.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # === Вкладка ЧАТ ===
+        chat = tk.Frame(nb, bg=COLORS["bg"])
+        nb.add(chat, text="💬 Chat")
+        
+        self.chat_log = scrolledtext.ScrolledText(chat, state='disabled', bg=COLORS["bg"], fg=COLORS["text"], font=(FONT_FAMILY, FONT_SIZE), insertbackground="white")
+        self.chat_log.pack(fill="both", expand=True, padx=5, pady=5)
+        self.chat_log.tag_config("user", foreground=COLORS["text_user"])
+        self.chat_log.tag_config("ai", foreground=COLORS["text_ai"])
+        self.chat_log.tag_config("sys", foreground=COLORS["text_warning"])
+        
+        inp_f = tk.Frame(chat, bg=COLORS["bg"])
+        inp_f.pack(fill="x", padx=5, pady=5)
+        self.msg_ent = tk.Entry(inp_f, bg=COLORS["entry_bg"], fg=COLORS["entry_fg"], font=(FONT_FAMILY, FONT_SIZE+1), insertbackground="white")
+        self.msg_ent.pack(side="left", fill="x", expand=True, ipady=5)
+        self.msg_ent.bind("<Return>", lambda e: self._send())
+        tk.Button(inp_f, text="Send", command=self._send, bg=COLORS["btn_primary"], fg="white", cursor="hand2").pack(side="right", padx=5)
+        
+        # === Вкладка ОБУЧЕНИЕ ===
+        train = tk.Frame(nb, bg=COLORS["bg"])
+        nb.add(train, text="🧠 Train AI")
+        
+        tk.Label(train, text="Ключевые слова (через запятую):", fg=COLORS["text"], bg=COLORS["bg"], font=(FONT_FAMILY, 10)).pack(anchor="w", padx=15, pady=(15,5))
+        self.kw_ent = tk.Entry(train, bg=COLORS["entry_bg"], fg=COLORS["entry_fg"], width=60, font=(FONT_FAMILY, FONT_SIZE))
+        self.kw_ent.pack(padx=15)
+        
+        tk.Label(train, text="Ответ бота:", fg=COLORS["text"], bg=COLORS["bg"], font=(FONT_FAMILY, 10)).pack(anchor="w", padx=15, pady=(15,5))
+        self.ans_ent = tk.Entry(train, bg=COLORS["entry_bg"], fg=COLORS["entry_fg"], width=60, font=(FONT_FAMILY, FONT_SIZE))
+        self.ans_ent.pack(padx=15)
+        
+        tk.Button(train, text="💾 Сохранить в базу", command=self._train, bg=COLORS["btn_success"], fg="white", cursor="hand2", font=(FONT_FAMILY, 10)).pack(pady=25)
+        
+        # === Вкладка НАСТРОЙКИ ===
+        settings = tk.Frame(nb, bg=COLORS["bg"])
+        nb.add(settings, text="⚙️ Settings")
+        
+        tk.Label(settings, text=f"{APP_NAME} v{VERSION}\nАвтор: {AUTHOR}\n{AUTHOR_EMAIL}\n{GITHUB_URL}", 
+                fg=COLORS["text"], bg=COLORS["bg"], font=(FONT_FAMILY, 10), justify="left").pack(pady=20)
+        
+        tk.Button(settings, text="🗑️ Очистить контекст", command=self._clear_context, bg="#555", fg="white", cursor="hand2").pack(pady=10)
+        tk.Button(settings, text="🔄 Перезагрузить базу знаний", command=self._reload_brain, bg="#555", fg="white", cursor="hand2").pack(pady=5)
+        tk.Label(settings, text="Секретная команда: kill.os", fg=COLORS["text_warning"], bg=COLORS["bg"], font=(FONT_FAMILY, 9)).pack(pady=20)
+    
+    def _log(self, sender: str, msg: str, tag: str = None):
+        self.chat_log.config(state='normal')
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.chat_log.insert('end', f"[{ts}] {sender}: {msg}\n", tag or ("user" if sender == "Ты" else "ai" if sender == "ИИ" else "sys"))
+        self.chat_log.see('end')
+        self.chat_log.config(state='disabled')
+    
+    def _send(self):
+        text = self.msg_ent.get().strip()
+        if not text: return
+        self.msg_ent.delete(0, 'end')
+        self._log("Ты", text, "user")
+        
+        # Проверка kill.os
+        if text.lower() == "kill.os":
+            self._trigger_red_alert()
+            return
+        
+        response = self.brain.get_response(text)
+        self._log("ИИ", response, "ai")
+        self.brain.add_context(text, response)
+    
+    def _train(self):
+        kw, ans = self.kw_ent.get(), self.ans_ent.get()
+        if kw and ans and self.brain.train(kw, ans):
+            messagebox.showinfo("Успех", "Фраза добавлена в базу знаний! 🎉")
+            self.kw_ent.delete(0, 'end')
+            self.ans_ent.delete(0, 'end')
+        else:
+            messagebox.showwarning("Ошибка", "Заполни оба поля!")
+    
+    def _clear_context(self):
+        if messagebox.askyesno("Подтверждение", "Очистить память контекста?"):
+            self.brain.clear_context()
+            self._log("СИСТЕМА", "Контекст очищен", "sys")
+    
+    def _reload_brain(self):
+        self.brain = MultiAIBrain()
+        self._log("СИСТЕМА", "База знаний перезапущена", "sys")
+    
+    def _logout(self):
+        if messagebox.askyesno("Выход", "Завершить сеанс?"):
+            self.root.destroy()
+            LoginWindow("root", lambda e: MainWindow(e))
+    
+    def _trigger_red_alert(self):
+        """Активирует красный режим"""
+        for color in ["text", "text_success", "text_warning", "text_error", "text_user", "text_ai"]:
+            COLORS[color] = COLORS["text_error"]
+        self._log("🔴", "РЕЖИМ ПАНИКИ АКТИВИРОВАН! Вся тема теперь красная.", "sys")
+        # Перерисовка (упрощённо)
+        self.chat_log.config(fg=COLORS["text_error"])
+
+
+# ==== ТОЧКА ВХОДА ====
+
+def main():
+    """Запуск приложения"""
+    # Проверяем сохранённую лицензию
+    saved = load_license()
+    if saved:
+        ok, _ = validate_license(saved["email"], saved
