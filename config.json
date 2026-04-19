@@ -1,8 +1,31 @@
 {
-  "app_name": "MultiAI",
-  "version": "3.0.0",
-  "secret_salt": "SuperSecretAdminSalt_2026_Qwen",
-  "fuzzy_threshold": 0.6,
-  "context_depth": 3,
-  "data_dir": "data"
+  "app": {
+    "name": "MultiAI",
+    "version": "3.0.0",
+    "author": "MaxCraft",
+    "email": "uskolyasochi@gmail.com"
+  },
+  "security": {
+    "secret_salt": "SuperSecretAdminSalt_2026_Qwen",
+    "license_file": "data/ai_license.dat"
+  },
+  "ai": {
+    "fuzzy_threshold": 0.6,
+    "context_depth": 3,
+    "knowledge_file": "data/multi_ai_knowledge.json",
+    "memory_file": "data/multi_ai_memory.json"
+  },
+  "gui": {
+    "theme": "dark",
+    "width": 800,
+    "height": 600,
+    "font": "Consolas",
+    "font_size": 11
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/multiai.log",
+    "max_size_mb": 10,
+    "backup_count": 3
+  }
 }
